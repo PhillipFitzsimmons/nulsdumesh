@@ -1,0 +1,259 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Resources": {
+        "VpcFargate": {
+            "Type": "AWS::EC2::VPC",
+            "Properties": {
+                "CidrBlock": "10.0.0.0/16",
+                "InstanceTenancy": "default",
+                "EnableDnsSupport": "true",
+                "EnableDnsHostnames": "true"
+            }
+        },
+        "InternetGateway": {
+            "Type": "AWS::EC2::InternetGateway"
+        },
+        "VpcGatewayAttachment": {
+            "Type": "AWS::EC2::VPCGatewayAttachment",
+            "DependsOn": [
+                "VpcFargate",
+                "InternetGateway"
+            ],
+            "Properties": {
+                "InternetGatewayId": {
+                    "Ref": "InternetGateway"
+                },
+                "VpcId": {
+                    "Ref": "VpcFargate"
+                }
+            }
+        },
+        "RouteTable": {
+            "Type": "AWS::EC2::RouteTable",
+            "DependsOn": [
+                "VpcFargate"
+            ],
+            "Properties": {
+                "VpcId": {
+                    "Ref": "VpcFargate"
+                }
+            }
+        },
+        "Route": {
+            "Type": "AWS::EC2::Route",
+            "DependsOn": [
+                "VpcFargate",
+                "InternetGateway",
+                "RouteTable"
+            ],
+            "Properties": {
+                "RouteTableId": {
+                    "Ref": "RouteTable"
+                },
+                "DestinationCidrBlock": "0.0.0.0/0",
+                "GatewayId": {
+                    "Ref": "InternetGateway"
+                }
+            }
+        },
+        "SubnetFargate": {
+            "Type": "AWS::EC2::Subnet",
+            "DependsOn": [
+                "VpcFargate"
+            ],
+            "Properties": {
+                "AvailabilityZone": "us-east-1a",
+                "CidrBlock": "10.0.0.0/24",
+                "MapPublicIpOnLaunch": "true",
+                "VpcId": {
+                    "Ref": "VpcFargate"
+                }
+            }
+        },
+        "SubnetRoute": {
+            "Type": "AWS::EC2::SubnetRouteTableAssociation",
+            "DependsOn": [
+                "SubnetFargate",
+                "RouteTable"
+            ],
+            "Properties": {
+                "RouteTableId": {
+                    "Ref": "RouteTable"
+                },
+                "SubnetId": {
+                    "Ref": "SubnetFargate"
+                }
+            }
+        },
+        "SecurityGroupFargate": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "DependsOn": [
+                "VpcFargate"
+            ],
+            "Properties": {
+                "GroupDescription": "Fargate Security Group",
+                "GroupName": "Fargate-SG",
+                "SecurityGroupIngress": [
+                    {
+                        "CidrIp": "0.0.0.0/0",
+                        "Description": "Allow HTTP traffic on port 80",
+                        "FromPort": 8080,
+                        "IpProtocol": "tcp",
+                        "ToPort": 8080
+                    },
+                    {
+                        "CidrIp": "0.0.0.0/0",
+                        "Description": "Allow HTTPS traffic on port 443",
+                        "FromPort": 443,
+                        "IpProtocol": "tcp",
+                        "ToPort": 443
+                    }
+                ],
+                "VpcId": {
+                    "Ref": "VpcFargate"
+                }
+            }
+        },
+        "FargateCluster": {
+            "Type": "AWS::ECS::Cluster",
+            "Properties": {
+                "ClusterName": "Cluster-CF"
+            }
+        },
+        "EcsTask": {
+            "Type": "AWS::ECS::TaskDefinition",
+            "Properties": {
+                "ContainerDefinitions": [
+                    {
+                        "Name": "dummy-micro-service-container",
+                        "Image": "209544401946.dkr.ecr.us-east-1.amazonaws.com/dummy-micro-service:latest",
+                        "PortMappings": [
+                            {
+                                "ContainerPort": 8080,
+                                "HostPort": 8080,
+                                "Protocol": "tcp"
+                            }
+                        ],
+                        "LogConfiguration": {
+                            "LogDriver": "awslogs",
+                            "Options": {
+                                "awslogs-group": "/ecs/task-medium",
+                                "awslogs-region": "us-east-1",
+                                "awslogs-stream-prefix": "ecs",
+                                "awslogs-create-group": "true"
+                            }
+                        }
+                    }
+                ],
+                "Cpu": 512,
+                "Memory": 1024,
+                "NetworkMode": "awsvpc",
+                "RequiresCompatibilities": [
+                    "FARGATE"
+                ],
+                "TaskRoleArn": {
+                    "Fn::GetAtt": [
+                        "EcsTaskRole",
+                        "Arn"
+                    ]
+                },
+                "ExecutionRoleArn": {
+                    "Fn::GetAtt": [
+                        "EcsTaskRole",
+                        "Arn"
+                    ]
+                },
+                "Tags": [
+                    {
+                        "Key": "created_by",
+                        "Value": "CloudFormation"
+                    }
+                ]
+            }
+        },
+        "Service": {
+            "Type": "AWS::ECS::Service",
+            "DependsOn": [
+                "EcsTask",
+                "FargateCluster",
+                "SubnetFargate",
+                "SecurityGroupFargate"
+            ],
+            "Properties": {
+                "Cluster": "Cluster-CF",
+                "DeploymentConfiguration": {
+                    "MaximumPercent": 200,
+                    "MinimumHealthyPercent": 100
+                },
+                "DeploymentController": {
+                    "Type": "ECS"
+                },
+                "DesiredCount": 1,
+                "LaunchType": "FARGATE",
+                "NetworkConfiguration": {
+                    "AwsvpcConfiguration": {
+                        "AssignPublicIp": "ENABLED",
+                        "Subnets": [
+                            {
+                                "Ref": "SubnetFargate"
+                            }
+                        ],
+                        "SecurityGroups": [
+                            {
+                                "Ref": "SecurityGroupFargate"
+                            }
+                        ]
+                    }
+                },
+                "SchedulingStrategy": "REPLICA",
+                "ServiceName": "Service-CF",
+                "TaskDefinition": {
+                    "Ref": "EcsTask"
+                }
+            }
+        },
+        "EcsTaskRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "ec2.amazonaws.com",
+                                    "ecs-tasks.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "Policies": [
+                    {
+                        "PolicyName": "root",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "ecs:*",
+                                        "ecr:*",
+                                        "logs:*"
+                                    ],
+                                    "Resource": [
+                                        "*"
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        }
+    }
+}
